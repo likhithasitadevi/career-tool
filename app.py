@@ -1,7 +1,10 @@
+import base64
 import json
 import os
+import re
 
 import streamlit as st
+from docx import Document
 from groq import Groq
 from pypdf import PdfReader
 
@@ -11,6 +14,17 @@ from pypdf import PdfReader
 # Tried in order; if one is retired (404 model_not_found) the next is used.
 # Check console.groq.com/docs/models occasionally, since Groq retires models often.
 MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+# Vision-capable models for image resumes, tried in order.
+# Check console.groq.com/docs/vision and update if you get "model not found".
+VISION_MODELS = [
+    "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+]
+
+IMAGE_TYPES = ["png", "jpg", "jpeg"]
+MAX_IMAGE_BYTES = 4 * 1024 * 1024  # keep images under ~4 MB
 MAX_RESUME_CHARS = 12000
 
 st.set_page_config(page_title="Skill-Gap & Career Roadmap Tool", page_icon="🎯", layout="wide")
@@ -56,7 +70,7 @@ def checkbox_key(role: str, skill: str) -> str:
     return f"skill_{role}_{skill}"
 
 
-HARDCODED_API_KEY = ""  # Optional: paste "gsk_..." here ONLY if your GitHub repo is PRIVATE
+HARDCODED_API_KEY = ""  # Leave empty. Use Streamlit secrets instead.
 
 
 def get_api_key() -> str:
@@ -72,25 +86,38 @@ def get_api_key() -> str:
     return os.getenv("GROQ_API_KEY", "")
 
 
-def ask_llm(prompt: str, temperature: float = 0.5):
-    """Call Groq and return text, or None after showing an error."""
+def ask_llm(prompt: str, temperature: float = 0.5, image_b64=None, mime="image/png"):
+    """Call Groq and return text, or None after showing an error.
+    If image_b64 is given, a vision model is used."""
     api_key = get_api_key()
     if not api_key:
         st.error("The AI service isn't configured yet. Please try again later.")
         return None
+
+    if image_b64:
+        models = VISION_MODELS
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+        ]
+    else:
+        models = MODELS
+        content = prompt
+
     client = Groq(api_key=api_key)
     last_error = None
-    for model in MODELS:
+    for model in models:
         try:
             response = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
                 model=model,
                 temperature=temperature,
             )
             return response.choices[0].message.content
         except Exception as e:
             last_error = e
-            if "model_not_found" in str(e) or "404" in str(e):
+            msg = str(e)
+            if "model_not_found" in msg or "404" in msg or "decommissioned" in msg:
                 continue  # try the next model
             break  # other errors (bad key, rate limit) won't be fixed by another model
     st.error(f"Groq API error: {last_error}")
@@ -99,12 +126,32 @@ def ask_llm(prompt: str, temperature: float = 0.5):
 
 def parse_json_list(text: str):
     """Pull a JSON list out of a model reply, even if it adds extra words."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     try:
         start, end = text.index("["), text.rindex("]") + 1
         data = json.loads(text[start:end])
         return [str(x) for x in data] if isinstance(data, list) else []
     except (ValueError, json.JSONDecodeError):
         return []
+
+
+def extract_resume_text(uploaded) -> str:
+    """Read text from a PDF, DOCX or TXT upload."""
+    name = uploaded.name.lower()
+    if name.endswith(".pdf"):
+        reader = PdfReader(uploaded)
+        return "".join(page.extract_text() or "" for page in reader.pages)
+    if name.endswith(".docx"):
+        doc = Document(uploaded)
+        parts = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    parts.append(cell.text)
+        return "\n".join(parts)
+    if name.endswith(".txt"):
+        return uploaded.getvalue().decode("utf-8", errors="ignore")
+    return ""
 
 
 # ------------------------------------------------------------------
@@ -119,53 +166,76 @@ tab1, tab2 = st.tabs(["📊 Skill Gap & Roadmap Generator", "📄 AI Resume Scan
 # ---------------------------- TAB 2: Resume scanner ----------------------------
 with tab2:
     st.subheader("Smart AI Resume Ingestion")
-    st.write("Upload your resume PDF. Detected skills will be auto-ticked in the first tab.")
+    st.write(
+        "Upload your resume as PDF, Word (.docx), text, or an image (PNG/JPG). "
+        "Detected skills will be auto-ticked in the first tab."
+    )
 
-    uploaded_pdf = st.file_uploader("Upload Resume PDF", type=["pdf"])
+    uploaded_file = st.file_uploader(
+        "Upload Resume", type=["pdf", "docx", "txt"] + IMAGE_TYPES
+    )
 
-    if uploaded_pdf and st.button("Scan Resume with AI"):
-        with st.spinner("Extracting text and analyzing skills..."):
-            try:
-                reader = PdfReader(uploaded_pdf)
-                resume_text = "".join(page.extract_text() or "" for page in reader.pages)
-            except Exception as e:
-                st.error(f"Could not read this PDF: {e}")
-                resume_text = ""
-
-            if not resume_text.strip():
-                st.error("Couldn't read text from this PDF (it may be a scanned image).")
-            else:
-                all_skills = sorted({s for skills in roles_requirements.values() for s in skills})
-                prompt = f"""You are a resume parser.
-From the resume below, return ONLY a JSON array of skills from this allowed list
+    if uploaded_file and st.button("Scan Resume with AI"):
+        with st.spinner("Reading your resume and analyzing skills..."):
+            all_skills = sorted({s for skills in roles_requirements.values() for s in skills})
+            instructions = f"""You are a resume parser.
+From the resume, return ONLY a JSON array of skills from this allowed list
 that the candidate clearly has evidence of (projects, experience, skills section).
 Do not add skills outside the list. No explanation, no markdown.
 
-Allowed list: {json.dumps(all_skills)}
+Allowed list: {json.dumps(all_skills)}"""
 
-Resume:
-{resume_text[:MAX_RESUME_CHARS]}"""
+            name = uploaded_file.name.lower()
+            reply = None
 
-                reply = ask_llm(prompt, temperature=0)
-                if reply is not None:
-                    found = parse_json_list(reply)
-                    found_lower = {f.lower() for f in found}
-                    matched = []
-                    for role, skills in roles_requirements.items():
-                        for skill in skills:
-                            if skill.lower() in found_lower:
-                                st.session_state[checkbox_key(role, skill)] = True
-                                matched.append(skill)
-                    if matched:
-                        st.success(
-                            f"Detected {len(set(matched))} skills: "
-                            f"{', '.join(sorted(set(matched)))}. "
-                            "Switch to the first tab to see them ticked."
-                        )
-                    else:
-                        st.warning("No matching skills detected. Tick them manually in the first tab.")
-    elif uploaded_pdf is None:
-        st.info("Upload a PDF to begin.")
+            if name.endswith(tuple(IMAGE_TYPES)):
+                data = uploaded_file.getvalue()
+                if len(data) > MAX_IMAGE_BYTES:
+                    st.error("Image is too large. Please upload one under 4 MB.")
+                else:
+                    mime = "image/png" if name.endswith("png") else "image/jpeg"
+                    reply = ask_llm(
+                        instructions + "\n\nThe resume is in the attached image.",
+                        temperature=0,
+                        image_b64=base64.b64encode(data).decode(),
+                        mime=mime,
+                    )
+            else:
+                try:
+                    resume_text = extract_resume_text(uploaded_file)
+                except Exception as e:
+                    st.error(f"Could not read this file: {e}")
+                    resume_text = ""
+
+                if not resume_text.strip():
+                    st.error(
+                        "Couldn't read text from this file (it may be a scanned image). "
+                        "Try uploading it as a PNG/JPG instead."
+                    )
+                else:
+                    reply = ask_llm(
+                        instructions + "\n\nResume:\n" + resume_text[:MAX_RESUME_CHARS],
+                        temperature=0,
+                    )
+
+            if reply is not None:
+                found_lower = {f.lower() for f in parse_json_list(reply)}
+                matched = []
+                for role, skills in roles_requirements.items():
+                    for skill in skills:
+                        if skill.lower() in found_lower:
+                            st.session_state[checkbox_key(role, skill)] = True
+                            matched.append(skill)
+                if matched:
+                    st.success(
+                        f"Detected {len(set(matched))} skills: "
+                        f"{', '.join(sorted(set(matched)))}. "
+                        "Switch to the first tab to see them ticked."
+                    )
+                else:
+                    st.warning("No matching skills detected. Tick them manually in the first tab.")
+    elif uploaded_file is None:
+        st.info("Upload a file to begin.")
 
 # ---------------------------- TAB 1: Skill gap ----------------------------
 with tab1:

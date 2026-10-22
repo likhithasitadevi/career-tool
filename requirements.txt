@@ -2,3 +2,4 @@ streamlit
 pypdf
 groq
 pandas
+python-docx
