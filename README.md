@@ -3,6 +3,7 @@
 An AI-powered web app that helps students find the gap between their current skills and the skills needed for their dream tech role, then generates a personalized week-by-week learning plan.
 
 **🔗 Live demo:** https://career-ls.streamlit.app
+
 <img width="500" alt="Screenshot 2026-10-22 at 11 49 36 PM" src="https://github.com/user-attachments/assets/95bb079e-8337-4dba-878c-cdd4561a655f" />
 <img width="500" alt="Screenshot 2026-10-22 at 11 49 44 PM" src="https://github.com/user-attachments/assets/c0d4570f-af6a-4729-b970-00d47073d9ff" />
 <img width="500" alt="Screenshot 2026-10-22 at 11 49 52 PM" src="https://github.com/user-attachments/assets/181622ea-f730-4a56-9d79-392dcd2975ac" />
