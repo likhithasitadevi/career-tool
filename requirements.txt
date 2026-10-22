@@ -1,5 +1,5 @@
-streamlit
-pypdf
-groq
-pandas
-python-docx
+   streamlit
+   pypdf
+   groq
+   pandas
+   python-docx
