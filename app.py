@@ -58,9 +58,20 @@ roles_requirements = {
         "SQL", "Excel", "Python", "Pandas", "Data Visualization",
         "Power BI/Tableau", "Statistics", "Communication",
     ],
+    "AWS Cloud Engineer": [
+        "Linux", "Cloud Computing Basics", "AWS EC2", "AWS S3",
+        "AWS VPC & Networking", "AWS IAM & Security", "AWS RDS/DynamoDB",
+        "AWS Lambda/Serverless", "AWS ELB & Auto Scaling",
+        "AWS Route 53/CloudFront", "AWS CloudWatch/Monitoring",
+        "AWS CLI & SDK (boto3)",
+        "Infrastructure as Code (CloudFormation/Terraform)",
+        "Cost Management & Billing",
+    ],
     "Cloud/DevOps Engineer": [
-        "Linux", "Docker", "Kubernetes", "AWS/Cloud", "Networking",
-        "Terraform", "CI/CD", "Git",
+        "Linux", "Shell Scripting/Bash", "Python Scripting", "Git",
+        "Docker", "Kubernetes", "Helm", "AWS/Cloud", "Azure/GCP",
+        "Networking", "Terraform", "Ansible", "CI/CD",
+        "Monitoring (Prometheus/Grafana)", "Cloud Security/IAM",
     ],
 }
 
@@ -157,8 +168,16 @@ def extract_resume_text(uploaded) -> str:
 
 
 def clean_roadmap_text(text: str) -> str:
-    """Safety net: turn <br> into new lines and drop any other HTML tags."""
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    """Safety net: remove <br> and other HTML tags without breaking table rows."""
+    cleaned = []
+    for line in text.splitlines():
+        if line.strip().startswith("|"):
+            # Inside a table row a new line would break the table, so use a separator
+            line = re.sub(r"\s*<br\s*/?>\s*(?:[•\-\*]\s*)?", "; ", line, flags=re.IGNORECASE)
+        else:
+            line = re.sub(r"<br\s*/?>", "\n", line, flags=re.IGNORECASE)
+        cleaned.append(line)
+    text = "\n".join(cleaned)
     return re.sub(r"</?[a-zA-Z][^>]*>", "", text)
 
 
@@ -364,6 +383,7 @@ with tab1:
 for a student targeting the role of {target_role}.
 Skills they already have: {', '.join(user_skills) if user_skills else 'None yet'}.
 Their missing skills are: {focus}.
+Order the weeks from foundational topics to advanced ones, so each week builds on the previous one.
 Format rules (important):
 - Use plain markdown only: a "## Week N: <title>" heading for each week, then bullet points.
 - Under each week use these bold labels: **Goal**, **Study topics**, **Free resources**, **Mini project**.
@@ -379,6 +399,7 @@ End with a "## Portfolio project idea" section that combines the skills. Keep it
 
     roadmap = st.session_state.get("roadmap")
     if roadmap:
+        roadmap["text"] = clean_roadmap_text(roadmap["text"])
         st.subheader(f"🗺️ Custom Roadmap for {roadmap['role']}")
         st.markdown(roadmap["text"])
         safe_name = roadmap["role"].replace("/", "-").replace(" ", "_")
