@@ -1,10 +1,12 @@
 import base64
+import io
 import json
 import os
 import re
 
 import streamlit as st
 from docx import Document
+from docx.shared import Pt
 from groq import Groq
 from pypdf import PdfReader
 
@@ -154,6 +156,89 @@ def extract_resume_text(uploaded) -> str:
     return ""
 
 
+def clean_roadmap_text(text: str) -> str:
+    """Safety net: turn <br> into new lines and drop any other HTML tags."""
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    return re.sub(r"</?[a-zA-Z][^>]*>", "", text)
+
+
+def add_runs(paragraph, text: str):
+    """Add text to a Word paragraph, turning **bold** and `code` into formatting."""
+    for part in re.split(r"(\*\*[^*]+\*\*|`[^`]+`)", text):
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            paragraph.add_run(part[2:-2]).bold = True
+        elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+            paragraph.add_run(part[1:-1]).font.name = "Consolas"
+        else:
+            paragraph.add_run(part)
+
+
+def markdown_to_docx(md_text: str, title: str) -> bytes:
+    """Convert the roadmap markdown into a Word document and return its bytes."""
+    doc = Document()
+    doc.add_heading(title, level=0)
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i].rstrip()
+        stripped = raw.strip()
+
+        if not stripped or re.fullmatch(r"[-*_]{3,}", stripped):
+            i += 1
+            continue
+
+        # Tables (in case the model still produces one)
+        if stripped.startswith("|"):
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                if not all(re.fullmatch(r":?-+:?", c) for c in cells):
+                    rows.append(cells)
+                i += 1
+            if rows:
+                ncols = max(len(r) for r in rows)
+                table = doc.add_table(rows=len(rows), cols=ncols)
+                table.style = "Table Grid"
+                for r_idx, row in enumerate(rows):
+                    for c_idx in range(ncols):
+                        cell_text = row[c_idx] if c_idx < len(row) else ""
+                        add_runs(table.cell(r_idx, c_idx).paragraphs[0], cell_text)
+            continue
+
+        # Headings
+        m = re.match(r"^(#{1,6})\s+(.*)", stripped)
+        if m:
+            doc.add_heading(m.group(2).replace("**", ""), level=min(len(m.group(1)), 3))
+            i += 1
+            continue
+
+        # Bullets
+        m = re.match(r"^(\s*)[-*•]\s+(.*)", raw)
+        if m:
+            style = "List Bullet 2" if len(m.group(1)) >= 2 else "List Bullet"
+            add_runs(doc.add_paragraph(style=style), m.group(2))
+            i += 1
+            continue
+
+        # Numbered lines keep their own numbers
+        m = re.match(r"^\s*(\d+[.)])\s+(.*)", raw)
+        if m:
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Pt(14)
+            add_runs(p, f"{m.group(1)} {m.group(2)}")
+            i += 1
+            continue
+
+        add_runs(doc.add_paragraph(), stripped)
+        i += 1
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
 # ------------------------------------------------------------------
 # Tabs
 # ------------------------------------------------------------------
@@ -279,19 +364,27 @@ with tab1:
 for a student targeting the role of {target_role}.
 Skills they already have: {', '.join(user_skills) if user_skills else 'None yet'}.
 Their missing skills are: {focus}.
-For each week give: goals, study topics, free resources to use, and a hands-on mini project.
-End with one portfolio project idea that combines the skills. Keep it clear and concise, in markdown."""
+Format rules (important):
+- Use plain markdown only: a "## Week N: <title>" heading for each week, then bullet points.
+- Under each week use these bold labels: **Goal**, **Study topics**, **Free resources**, **Mini project**.
+- Do NOT use tables. Do NOT use any HTML tags such as <br>.
+- Put each topic, resource and project step on its own bullet line.
+End with a "## Portfolio project idea" section that combines the skills. Keep it clear and concise."""
             text = ask_llm(prompt)
             if text:
-                st.session_state["roadmap"] = {"role": target_role, "text": text}
+                st.session_state["roadmap"] = {
+                    "role": target_role,
+                    "text": clean_roadmap_text(text),
+                }
 
     roadmap = st.session_state.get("roadmap")
     if roadmap:
         st.subheader(f"🗺️ Custom Roadmap for {roadmap['role']}")
         st.markdown(roadmap["text"])
+        safe_name = roadmap["role"].replace("/", "-").replace(" ", "_")
         st.download_button(
-            "Download roadmap (.md)",
-            data=roadmap["text"],
-            file_name=f"{roadmap['role'].replace('/', '-').replace(' ', '_')}_roadmap.md",
-            mime="text/markdown",
+            "📄 Download roadmap (Word document)",
+            data=markdown_to_docx(roadmap["text"], f"Learning Roadmap: {roadmap['role']}"),
+            file_name=f"{safe_name}_roadmap.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
