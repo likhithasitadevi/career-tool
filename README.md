@@ -16,7 +16,7 @@ An AI-powered web app that helps students find the gap between their current ski
   - Supports **PDF, Word (.docx), plain text (.txt)** and **images (PNG/JPG)**
   - Images are read directly by a vision model, so even a screenshot or photo of a resume works
 - **AI learning roadmap:** get a custom plan (2 to 12 weeks) with goals, topics, free resources, and mini projects
-- **Download:** save your roadmap as a Markdown file
+- **Download:** save your roadmap as a Word (.docx).
 - **Roles covered:** Software Developer, Frontend, Backend, Data Scientist, Data Analyst, Cloud/DevOps Engineer
 
 ## Tech stack
